@@ -1,10 +1,9 @@
 /**
- * AGENTE DE DESPACHO - BACKEND RAILWAY V3
+ * AGENTE DE DESPACHO - BACKEND RAILWAY V4
  * 
  * Fixes:
  * - CORS configurado correctamente para todos los orígenes de Lovable
- * - Preflight OPTIONS respondiendo con headers correctos
- * - Validación JWT de Supabase
+ * - Validación JWT usando endpoint /auth/v1/user de Supabase (confiable)
  * - Cliente Supabase con RLS (usuario autenticado)
  * - Conecta Claude API + MCP de Lovable
  * - Responde en formato: { message: "..." }
@@ -35,7 +34,7 @@ const ALLOWED_ORIGINS = [
 ];
 
 // ==========================================
-// MIDDLEWARE CORS (ARREGLADO)
+// MIDDLEWARE CORS
 // ==========================================
 
 const corsOptions = {
@@ -53,11 +52,11 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Importante: responder al preflight
+app.options('*', cors(corsOptions));
 app.use(express.json());
 
 // ==========================================
-// VALIDACIÓN JWT SUPABASE
+// VALIDACIÓN JWT SUPABASE (Endpoint /auth/v1/user)
 // ==========================================
 
 async function validateToken(token) {
@@ -68,24 +67,23 @@ async function validateToken(token) {
       ? token.slice(7) 
       : token;
     
-    const jwksUrl = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`;
-    const jwksResponse = await fetch(jwksUrl);
-    const jwks = await jwksResponse.json();
-    
-    const [headerB64] = jwt.split('.');
-    const header = JSON.parse(Buffer.from(headerB64, 'base64').toString());
-    
-    const key = jwks.keys.find(k => k.kid === header.kid);
-    if (!key) throw new Error('Key not found in JWKS');
-    
-    const [, payloadB64] = jwt.split('.');
-    const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString());
-    
-    if (!payload.sub) throw new Error('Invalid token: no sub claim');
-    
+    // Llamar a Supabase para validar el token
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: {
+        'Authorization': `Bearer ${jwt}`,
+        'apikey': SUPABASE_ANON_KEY,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Supabase auth error: ${response.statusText}`);
+    }
+
+    const user = await response.json();
+
     return {
-      userId: payload.sub,
-      email: payload.email,
+      userId: user.id,
+      email: user.email,
       token: jwt,
     };
   } catch (error) {
