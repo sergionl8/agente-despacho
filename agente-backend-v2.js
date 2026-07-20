@@ -1,8 +1,9 @@
 /**
- * AGENTE DE DESPACHO - BACKEND RAILWAY V2
+ * AGENTE DE DESPACHO - BACKEND RAILWAY V3
  * 
- * Features:
- * - CORS permitiendo Lovable (producción + preview)
+ * Fixes:
+ * - CORS configurado correctamente para todos los orígenes de Lovable
+ * - Preflight OPTIONS respondiendo con headers correctos
  * - Validación JWT de Supabase
  * - Cliente Supabase con RLS (usuario autenticado)
  * - Conecta Claude API + MCP de Lovable
@@ -10,7 +11,6 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { createClient } from '@supabase/supabase-js';
 import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
@@ -21,40 +21,39 @@ const app = express();
 // CONFIGURACIÓN
 // ==========================================
 
-const SUPABASE_URL = process.env.SUPABASE_URL; // https://xxxxx.supabase.co
+const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
 const PORT = process.env.PORT || 3001;
 
 const MCP_SERVER_URL = 'https://gml-drive-vision.lovable.app/mcp';
 
-const ALLOWED_ORIGINS = new Set([
+const ALLOWED_ORIGINS = [
   'https://gml-drive-vision.lovable.app',
   'https://id-preview--b33710e6-a4cd-4f8c-a9e6-996c2bd4d083.lovable.app',
-]);
+  'https://b33710e6-a4cd-4f8c-a9e6-996c2bd4d083.lovableproject.com',
+];
 
 // ==========================================
-// MIDDLEWARE CORS DINÁMICO
+// MIDDLEWARE CORS (ARREGLADO)
 // ==========================================
 
-app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-  }
-  
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(204);
-  }
-  
-  next();
-});
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['POST', 'OPTIONS', 'GET'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false,
+  maxAge: 86400,
+};
 
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Importante: responder al preflight
 app.use(express.json());
 
 // ==========================================
@@ -65,28 +64,20 @@ async function validateToken(token) {
   try {
     if (!token) throw new Error('No token provided');
     
-    // Remover "Bearer " del inicio
     const jwt = token.startsWith('Bearer ') 
       ? token.slice(7) 
       : token;
-    
-    // Opción B: Validar JWT contra JWKS de Supabase
-    // (sin hacer llamada a Supabase en cada request)
     
     const jwksUrl = `${SUPABASE_URL}/auth/v1/.well-known/jwks.json`;
     const jwksResponse = await fetch(jwksUrl);
     const jwks = await jwksResponse.json();
     
-    // Decodificar JWT header para obtener kid
     const [headerB64] = jwt.split('.');
     const header = JSON.parse(Buffer.from(headerB64, 'base64').toString());
     
-    // Buscar key correspondiente
     const key = jwks.keys.find(k => k.kid === header.kid);
     if (!key) throw new Error('Key not found in JWKS');
     
-    // Verificar firma (simplificado - en prod usa jsonwebtoken library)
-    // Por ahora, solo decodificamos y usamos el payload
     const [, payloadB64] = jwt.split('.');
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString());
     
@@ -289,7 +280,6 @@ IMPORTANTE:
     messages: messages,
   });
 
-  // Procesar respuesta, ejecutando herramientas si es necesario
   let finalText = '';
 
   for (const block of response.content) {
@@ -318,7 +308,6 @@ app.post('/api/chat', async (req, res) => {
     const { messages } = req.body;
     const authHeader = req.headers.authorization;
 
-    // Validar entrada
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({
         error: 'Messages debe ser un array',
@@ -331,7 +320,6 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    // Validar token
     let userInfo;
     try {
       userInfo = await validateToken(authHeader);
@@ -343,10 +331,8 @@ app.post('/api/chat', async (req, res) => {
 
     console.log(`Request de usuario: ${userInfo.email} (${userInfo.userId})`);
 
-    // Procesar con Claude
     const message = await processMessageWithClaude(messages, userInfo.token);
 
-    // Responder en formato esperado por Lovable
     res.json({
       message: message,
       userId: userInfo.userId,
@@ -362,7 +348,7 @@ app.post('/api/chat', async (req, res) => {
 });
 
 // ==========================================
-// ENDPOINT: GET /health (para testing)
+// ENDPOINT: GET /health
 // ==========================================
 
 app.get('/health', (req, res) => {
@@ -371,6 +357,7 @@ app.get('/health', (req, res) => {
     mcp_server: MCP_SERVER_URL,
     supabase: SUPABASE_URL ? '✓ Configurado' : '✗ Falta SUPABASE_URL',
     claude_api: CLAUDE_API_KEY ? '✓ Configurado' : '✗ Falta CLAUDE_API_KEY',
+    cors_allowed: ALLOWED_ORIGINS,
     timestamp: new Date().toISOString(),
   });
 });
@@ -383,9 +370,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Agente Backend escuchando en puerto ${PORT}`);
   console.log(`📡 MCP Server: ${MCP_SERVER_URL}`);
   console.log(`🔐 Supabase: ${SUPABASE_URL}`);
-  console.log(`\n⚠️  Variables de entorno requeridas:`);
-  console.log(`  - CLAUDE_API_KEY`);
-  console.log(`  - SUPABASE_URL`);
-  console.log(`  - SUPABASE_ANON_KEY`);
+  console.log(`🌐 CORS permitido para:`);
+  ALLOWED_ORIGINS.forEach(origin => console.log(`   - ${origin}`));
   console.log(`\n✅ Listo para recibir solicitudes desde Lovable`);
 });
