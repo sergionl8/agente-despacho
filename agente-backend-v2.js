@@ -1,9 +1,10 @@
 /**
- * AGENTE DE DESPACHO - BACKEND RAILWAY V4
+ * AGENTE DE DESPACHO - BACKEND RAILWAY V5
  * 
  * Fixes:
  * - CORS configurado correctamente para todos los orígenes de Lovable
  * - Validación JWT usando endpoint /auth/v1/user de Supabase (confiable)
+ * - DEBUG: console.log para troubleshooting de tokens
  * - Cliente Supabase con RLS (usuario autenticado)
  * - Conecta Claude API + MCP de Lovable
  * - Responde en formato: { message: "..." }
@@ -56,7 +57,7 @@ app.options('*', cors(corsOptions));
 app.use(express.json());
 
 // ==========================================
-// VALIDACIÓN JWT SUPABASE (Endpoint /auth/v1/user)
+// VALIDACIÓN JWT SUPABASE (CON DEBUG)
 // ==========================================
 
 async function validateToken(token) {
@@ -67,7 +68,24 @@ async function validateToken(token) {
       ? token.slice(7) 
       : token;
     
+    // DEBUG: Decodificar y loggear el token
+    const parts = jwt.split('.');
+    if (parts.length !== 3) throw new Error('Invalid JWT format');
+    
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+    
+    console.log('\n=== DEBUG TOKEN VALIDATION ===');
+    console.log('Token prefix:', jwt.substring(0, 50) + '...');
+    console.log('Token iss:', payload.iss);
+    console.log('Token exp:', payload.exp);
+    console.log('Token email:', payload.email);
+    console.log('SUPABASE_URL env:', SUPABASE_URL);
+    console.log('SUPABASE_ANON_KEY exists:', !!SUPABASE_ANON_KEY);
+    console.log('===============================\n');
+    
     // Llamar a Supabase para validar el token
+    console.log(`Calling ${SUPABASE_URL}/auth/v1/user with Bearer token...`);
+    
     const response = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
       headers: {
         'Authorization': `Bearer ${jwt}`,
@@ -75,11 +93,16 @@ async function validateToken(token) {
       },
     });
 
+    console.log(`Supabase response status: ${response.status}`);
+
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Supabase error (${response.status}):`, errorText);
       throw new Error(`Supabase auth error: ${response.statusText}`);
     }
 
     const user = await response.json();
+    console.log('Supabase user validated:', user.email);
 
     return {
       userId: user.id,
@@ -87,7 +110,7 @@ async function validateToken(token) {
       token: jwt,
     };
   } catch (error) {
-    console.error('Token validation error:', error.message);
+    console.error('❌ Token validation FAILED:', error.message);
     throw error;
   }
 }
@@ -327,7 +350,7 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    console.log(`Request de usuario: ${userInfo.email} (${userInfo.userId})`);
+    console.log(`✅ Request de usuario: ${userInfo.email} (${userInfo.userId})`);
 
     const message = await processMessageWithClaude(messages, userInfo.token);
 
